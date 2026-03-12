@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# OSINT Monitor Specific
+config.py
+events.db
+session.session
+.env
+
+# Streamlit
+.streamlit/
+! .streamlit/config.toml
+
+# OS
+.DS_Store
+Thumbs.db

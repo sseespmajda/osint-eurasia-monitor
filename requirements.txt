@@ -1,0 +1,6 @@
+telethon
+google-genai
+streamlit
+pandas
+plotly
+sqlite3
