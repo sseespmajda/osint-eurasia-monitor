@@ -4,9 +4,8 @@ __pycache__/
 *$py.class
 
 # OSINT Monitor Specific
-# We now include config.py for cloud import, but KEEP keys in Secrets
-# config.py 
-events.db
+# config.py is now included for cloud imports
+# events.db is now included so the Cloud can see initial data
 session.session
 .env
 
