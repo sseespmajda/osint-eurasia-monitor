@@ -26,30 +26,23 @@ SECTOR_COLORS = {
     "energy": "#9467BD"         # Muted Purple
 }
 
-@st.cache_data(ttl=300) # Cache for 5 minutes
+@st.cache_data(ttl=300)
 def load_data():
     events = database.get_all_events()
     if not events:
         return None
     df = pd.DataFrame(events)
 
-    # --- Resilience: Ensure columns exist ---
     for col in ['message_id', 'sources', 'country']:
         if col not in df.columns:
             df[col] = None
 
-    # Fill empty countries
     df['country'] = df['country'].fillna('International')
-
-    # Ensure timestamp is datetime
     df['timestamp_dt'] = pd.to_datetime(df['timestamp'], errors='coerce')
     df['ingested_at_dt'] = pd.to_datetime(df['ingested_at'], errors='coerce')
-
-    # Use ingested_at as the primary sorting date
     df['final_dt'] = df['ingested_at_dt'].fillna(df['timestamp_dt'])
     df['final_date_only'] = df['final_dt'].dt.date
 
-    # Process sources column
     def format_sources(row):
         try:
             if row.get('sources') and isinstance(row['sources'], str):
@@ -61,19 +54,17 @@ def load_data():
 
     df['Channels'] = df.apply(format_sources, axis=1)
 
-    # Create source link (Telegram link)
     def make_link(row):
         if pd.isna(row.get('source_channel')) or pd.isna(row.get('message_id')):
             return None
         return f"https://t.me/{row['source_channel']}/{int(row['message_id'])}"
 
     df['Source Link'] = df.apply(make_link, axis=1)
-
     return df
 
 st.title("🛡️ OSINT Eurasia Monitor")
 
-# Get database file modification time for "Last Update"
+# Get database file modification time
 try:
     db_mtime = os.path.getmtime(database.config.DB_PATH)
     last_update = datetime.datetime.fromtimestamp(db_mtime).strftime("%d-%B-%Y %H:%M:%S")
@@ -91,17 +82,28 @@ if st.sidebar.button("🔄 Manual Refresh"):
     st.rerun()
 
 if df is not None and not df.empty:
-    # Country Filter
     all_countries = sorted(df['country'].unique())
-    selected_countries = st.sidebar.multiselect("Select Countries", all_countries, default=all_countries)        
-
-    # Sector Filter
     all_sectors = sorted(df['event_type'].unique())
-    selected_sectors = st.sidebar.multiselect("Select Sectors", all_sectors, default=all_sectors)
-
-    # Date Filter
     min_date = df['final_date_only'].min()
     max_date = df['final_date_only'].max()
+
+    # Initial state for map selection
+    if "map_selected_country" not in st.session_state:
+        st.session_state.map_selected_country = None
+
+    # Handle sidebar country multiselect
+    # If a map selection happened, we can pre-set the selection
+    default_countries = all_countries
+    if st.session_state.map_selected_country:
+        if st.session_state.map_selected_country in all_countries:
+            default_countries = [st.session_state.map_selected_country]
+            # Reset map selection after setting filter if needed, or keep it
+            if st.sidebar.button("Clear Map Filter"):
+                st.session_state.map_selected_country = None
+                st.rerun()
+
+    selected_countries = st.sidebar.multiselect("Select Countries", all_countries, default=default_countries)        
+    selected_sectors = st.sidebar.multiselect("Select Sectors", all_sectors, default=all_sectors)
     date_range = st.sidebar.date_input("Date Range", [min_date, max_date])
 else:
     selected_countries = []
@@ -120,10 +122,6 @@ def main_dashboard():
 
     filtered_df = df.loc[mask].copy()
 
-    if filtered_df.empty:
-        st.warning("No events found matching the current filters.")
-        return
-
     # --- Top Metric Cards ---
     m1, m2, m3, m4 = st.columns(4)
     with m1:
@@ -135,17 +133,15 @@ def main_dashboard():
         top_type = filtered_df['event_type'].mode()[0] if not filtered_df.empty else "N/A"
         st.metric("Primary Sector", top_type)
     with m4:
-        # Count total unique channel mentions
         total_mentions = filtered_df['Channels'].str.split(',').str.len().sum()
-        st.metric("Total Mentions", int(total_mentions))
+        st.metric("Total Mentions", int(total_mentions) if not pd.isna(total_mentions) else 0)
 
     st.divider()
 
-    # --- Map Visualization ---
-    st.subheader("🌍 Geographic Distribution")
-    country_counts = filtered_df.groupby('country').size().reset_index(name='Events')
+    # --- Map Visualization (Interactive) ---
+    st.subheader("🌍 Geographic Distribution (Click to filter)")
+    country_counts = df.groupby('country').size().reset_index(name='Events')
     
-    # Map visualization
     fig_map = px.choropleth(country_counts, 
                             locations="country", 
                             locationmode="country names",
@@ -153,12 +149,28 @@ def main_dashboard():
                             hover_name="country",
                             color_continuous_scale=px.colors.sequential.Reds,
                             template="plotly_dark")
-    fig_map.update_layout(margin={"r":0,"t":0,"l":0,"b":0}, height=400)
-    st.plotly_chart(fig_map, use_container_width=True)
+    fig_map.update_layout(margin={"r":0,"t":0,"l":0,"b":0}, height=400, clickmode='event+select')
+    
+    # Capture map selection (requires Streamlit 1.35+)
+    selected_map_data = st.plotly_chart(fig_map, use_container_width=True, on_select="rerun")
+    
+    # Process selection data
+    if selected_map_data and "selection" in selected_map_data:
+        points = selected_map_data["selection"].get("points", [])
+        if points:
+            # Get the country from the clicked point
+            # Plotly choropleth points usually have 'location' which is the country name
+            clicked_country = points[0].get("location")
+            if clicked_country and clicked_country != st.session_state.map_selected_country:
+                st.session_state.map_selected_country = clicked_country
+                st.rerun()
+
+    if filtered_df.empty:
+        st.warning("No events found matching the current filters.")
+        return
 
     # --- Charts ---
     c1, c2 = st.columns(2)
-
     with c1:
         st.subheader("📈 Events Over Time")
         daily_counts = filtered_df.groupby('final_date_only').size().reset_index(name='count')
@@ -178,8 +190,6 @@ def main_dashboard():
 
     # --- Full Data Table ---
     st.subheader("📰 Detailed Event Feed")
-
-    # Prepare for display
     display_df = filtered_df[['final_dt', 'country', 'event_type', 'text_summary', 'Channels', 'Source Link']].copy()
     display_df['final_dt'] = display_df['final_dt'].dt.strftime("%Y-%m-%d %H:%M")
     
@@ -197,7 +207,6 @@ def main_dashboard():
         hide_index=True
     )
 
-    # --- Recent Event Cards (Optional expansion) ---
     with st.expander("🔍 View Recent Summary Details"):
         for _, row in filtered_df.head(5).iterrows():
             st.markdown(f"**{row['final_dt']} | {row['country']} | {row['event_type']}**")
