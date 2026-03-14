@@ -12,19 +12,29 @@ database.setup_database()
 # Page configuration
 st.set_page_config(page_title="OSINT Eurasia Monitor", layout="wide", page_icon="🛡️")
 
-# Define consistent colors for sectors
+# Define consistent colors for new sectors
 SECTOR_COLORS = {
-    "security": "#EF553B",      # Red
-    "war": "#B6E880",           # Green
-    "terrorism": "#000000",      # Black
-    "sanctions": "#AB63FA",     # Purple
-    "public safety": "#FFA15A",  # Orange
-    "healthcare": "#19D3F3",    # Cyan
-    "economic": "#FF6692",      # Pink
-    "political": "#17BECF",     # Teal
-    "infrastructure": "#FFD700", # Gold
-    "energy": "#9467BD"         # Muted Purple
+    "Security": "#EF553B",       # Red
+    "Politics": "#17BECF",       # Teal
+    "Economy": "#FF6692",        # Pink
+    "Infrastructure": "#FFD700", # Gold
+    "Other": "#9467BD"           # Muted Purple
 }
+
+# --- Data Cleaning Logic for Broad Categories ---
+def categorize_sector(val):
+    if not val:
+        return "Other"
+    val = val.strip().lower()
+    if any(k in val for k in ["war", "security", "terrorism", "safety", "military"]):
+        return "Security"
+    if any(k in val for k in ["politics", "political", "relation", "diplomat"]):
+        return "Politics"
+    if any(k in val for k in ["economy", "economic", "sanction", "trade", "finance"]):
+        return "Economy"
+    if any(k in val for k in ["infra", "energy", "transport", "communication", "rail", "electric"]):
+        return "Infrastructure"
+    return "Other"
 
 @st.cache_data(ttl=300)
 def load_data():
@@ -33,11 +43,14 @@ def load_data():
         return None
     df = pd.DataFrame(events)
 
-    for col in ['message_id', 'sources', 'country']:
+    for col in ['message_id', 'sources', 'country', 'event_type']:
         if col not in df.columns:
             df[col] = None
 
+    # Apply re-categorization to simplify labels
+    df['event_type'] = df['event_type'].apply(categorize_sector)
     df['country'] = df['country'].fillna('International')
+    
     df['timestamp_dt'] = pd.to_datetime(df['timestamp'], errors='coerce')
     df['ingested_at_dt'] = pd.to_datetime(df['ingested_at'], errors='coerce')
     df['final_dt'] = df['ingested_at_dt'].fillna(df['timestamp_dt'])
@@ -87,17 +100,13 @@ if df is not None and not df.empty:
     min_date = df['final_date_only'].min()
     max_date = df['final_date_only'].max()
 
-    # Initial state for map selection
     if "map_selected_country" not in st.session_state:
         st.session_state.map_selected_country = None
 
-    # Handle sidebar country multiselect
-    # If a map selection happened, we can pre-set the selection
     default_countries = all_countries
     if st.session_state.map_selected_country:
         if st.session_state.map_selected_country in all_countries:
             default_countries = [st.session_state.map_selected_country]
-            # Reset map selection after setting filter if needed, or keep it
             if st.sidebar.button("Clear Map Filter"):
                 st.session_state.map_selected_country = None
                 st.rerun()
@@ -151,15 +160,11 @@ def main_dashboard():
                             template="plotly_dark")
     fig_map.update_layout(margin={"r":0,"t":0,"l":0,"b":0}, height=400, clickmode='event+select')
     
-    # Capture map selection (requires Streamlit 1.35+)
     selected_map_data = st.plotly_chart(fig_map, use_container_width=True, on_select="rerun")
     
-    # Process selection data
     if selected_map_data and "selection" in selected_map_data:
         points = selected_map_data["selection"].get("points", [])
         if points:
-            # Get the country from the clicked point
-            # Plotly choropleth points usually have 'location' which is the country name
             clicked_country = points[0].get("location")
             if clicked_country and clicked_country != st.session_state.map_selected_country:
                 st.session_state.map_selected_country = clicked_country
@@ -188,31 +193,33 @@ def main_dashboard():
                             labels={'event_type': 'Sector', 'count': 'Total'})
         st.plotly_chart(fig_sector, use_container_width=True)
 
-    # --- Full Data Table ---
+    # --- Full News Feed (Replacing Table for Text Wrapping) ---
     st.subheader("📰 Detailed Event Feed")
-    display_df = filtered_df[['final_dt', 'country', 'event_type', 'text_summary', 'Channels', 'Source Link']].copy()
-    display_df['final_dt'] = display_df['final_dt'].dt.strftime("%Y-%m-%d %H:%M")
     
-    st.dataframe(
-        display_df,
-        column_config={
-            "final_dt": "Date/Time",
-            "country": "Country",
-            "event_type": "Sector",
-            "text_summary": "Summary",
-            "Channels": "Sources",
-            "Source Link": st.column_config.LinkColumn("Link")
-        },
-        use_container_width=True,
-        hide_index=True
-    )
+    # Display headers for the custom feed
+    h1, h2, h3, h4 = st.columns([1, 1, 1, 3])
+    with h1: st.markdown("**Date/Time**")
+    with h2: st.markdown("**Country**")
+    with h3: st.markdown("**Sector**")
+    with h4: st.markdown("**Summary**")
+    st.divider()
 
-    with st.expander("🔍 View Recent Summary Details"):
-        for _, row in filtered_df.head(5).iterrows():
-            st.markdown(f"**{row['final_dt']} | {row['country']} | {row['event_type']}**")
+    for _, row in filtered_df.iterrows():
+        r1, r2, r3, r4 = st.columns([1, 1, 1, 3])
+        with r1:
+            st.write(row['final_dt'].strftime("%Y-%m-%d %H:%M"))
+        with r2:
+            st.write(row['country'])
+        with r3:
+            # Color badge simulation
+            color = SECTOR_COLORS.get(row['event_type'], "#FFFFFF")
+            st.markdown(f"<span style='color:{color}; font-weight:bold;'>{row['event_type']}</span>", unsafe_allow_html=True)
+        with r4:
             st.write(row['text_summary'])
             st.caption(f"Sources: {row['Channels']}")
-            st.divider()
+            if row['Source Link']:
+                st.link_button("View Original Telegram Message", row['Source Link'], icon="🔗")
+        st.divider()
 
 if __name__ == "__main__":
     main_dashboard()

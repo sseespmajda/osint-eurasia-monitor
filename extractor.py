@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 import json
 import datetime
 from google import genai
@@ -24,7 +24,7 @@ def extract_event(message_text, channel_name, recent_events=None):
     prompt = f"""
     You are an intelligence analyst. Extract structured data from the message.
     IMPORTANT: All fields in the resulting JSON MUST be in English.
-    
+
     CONTEXT:
     Below are recent events already recorded in the last 3 hours:
     {context_str}
@@ -34,11 +34,17 @@ def extract_event(message_text, channel_name, recent_events=None):
     Content: {message_text}
 
     TASK:
-    1. Determine if the 'NEW MESSAGE' is relevant to political/security/economic events.
+    1. Determine if the 'NEW MESSAGE' is relevant to political/security/economic/infrastructure events.
     2. Check if it describes the SAME real-world incident as any event in the CONTEXT.
        - If it's the same event (even with slightly different details), mark as duplicate.
     3. Identify the primary country the news refers to. Use full English names (e.g., 'Russia', 'Ukraine', 'Israel', 'USA').
-    
+    4. Categorize the event into EXACTLY ONE of these sectors:
+       - Security (includes war, terrorism, public safety, military)
+       - Politics (includes domestic politics, international relations)
+       - Economy (includes sanctions, trade, finance)
+       - Infrastructure (includes energy, transport, communications)
+       - Other (anything else relevant)
+
     Respond ONLY with valid JSON:
     {{
       "relevant": true/false,
@@ -47,7 +53,7 @@ def extract_event(message_text, channel_name, recent_events=None):
       "timestamp": "ISO date or null",
       "text_title": "English title",
       "text_summary": "Detailed English summary",
-      "event_type": "security, war, etc.",
+      "event_type": "Security, Politics, Economy, Infrastructure, or Other",
       "country": "Primary country name in English",
       "notes": "English notes"
     }}
@@ -67,9 +73,3 @@ def extract_event(message_text, channel_name, recent_events=None):
     except Exception as e:
         print(f"Error in extract_event: {e}")
         return {"relevant": False}
-
-def is_duplicate(new_event, existing_events, similarity_threshold=0.55):
-    """Legacy helper for fallback or non-LLM checks."""
-    # This is now largely handled by the LLM in extract_event, 
-    # but we keep the logic for backward compatibility if needed.
-    return False, None
