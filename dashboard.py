@@ -26,13 +26,13 @@ def categorize_sector(val):
     if not val:
         return "Other"
     val = val.strip().lower()
-    if any(k in val for k in ["war", "security", "terrorism", "safety", "military"]):
+    if any(k in val for k in ["war", "security", "terrorism", "safety", "military", "captured"]):
         return "Security"
-    if any(k in val for k in ["politics", "political", "relation", "diplomat"]):
+    if any(k in val for k in ["politics", "political", "relation", "diplomat", "election", "government"]):
         return "Politics"
-    if any(k in val for k in ["economy", "economic", "sanction", "trade", "finance"]):
+    if any(k in val for k in ["economy", "economic", "sanction", "trade", "finance", "oil", "gas", "business"]):
         return "Economy"
-    if any(k in val for k in ["infra", "energy", "transport", "communication", "rail", "electric"]):
+    if any(k in val for k in ["infra", "energy", "transport", "communication", "rail", "electric", "power", "utility"]):
         return "Infrastructure"
     return "Other"
 
@@ -100,19 +100,33 @@ if df is not None and not df.empty:
     min_date = df['final_date_only'].min()
     max_date = df['final_date_only'].max()
 
+    # Session State for interactive filtering
     if "map_selected_country" not in st.session_state:
         st.session_state.map_selected_country = None
+    if "chart_selected_sector" not in st.session_state:
+        st.session_state.chart_selected_sector = None
 
+    # Clear All Map & Chart Filters Button
+    if st.session_state.map_selected_country or st.session_state.chart_selected_sector:
+        if st.sidebar.button("Clear Interactive Filters"):
+            st.session_state.map_selected_country = None
+            st.session_state.chart_selected_sector = None
+            st.rerun()
+
+    # Handle Country selection sync
     default_countries = all_countries
     if st.session_state.map_selected_country:
         if st.session_state.map_selected_country in all_countries:
             default_countries = [st.session_state.map_selected_country]
-            if st.sidebar.button("Clear Map Filter"):
-                st.session_state.map_selected_country = None
-                st.rerun()
+
+    # Handle Sector selection sync
+    default_sectors = all_sectors
+    if st.session_state.chart_selected_sector:
+        if st.session_state.chart_selected_sector in all_sectors:
+            default_sectors = [st.session_state.chart_selected_sector]
 
     selected_countries = st.sidebar.multiselect("Select Countries", all_countries, default=default_countries)        
-    selected_sectors = st.sidebar.multiselect("Select Sectors", all_sectors, default=all_sectors)
+    selected_sectors = st.sidebar.multiselect("Select Sectors", all_sectors, default=default_sectors)
     date_range = st.sidebar.date_input("Date Range", [min_date, max_date])
 else:
     selected_countries = []
@@ -177,26 +191,37 @@ def main_dashboard():
     # --- Charts ---
     c1, c2 = st.columns(2)
     with c1:
-        st.subheader("📈 Events Over Time")
+        st.subheader("📊 Events Over Time")
         daily_counts = filtered_df.groupby('final_date_only').size().reset_index(name='count')
-        fig_time = px.area(daily_counts, x='final_date_only', y='count',
-                          labels={'final_date_only': 'Date', 'count': 'Number of Events'},
+        # Change to BAR chart as requested
+        fig_time = px.bar(daily_counts, x='final_date_only', y='count',
+                          labels={'final_date_only': 'Date', 'count': 'Events'},
                           color_discrete_sequence=['#EF553B'])
         st.plotly_chart(fig_time, use_container_width=True)
 
     with c2:
-        st.subheader("📊 Sector Distribution")
+        st.subheader("📉 Sector Distribution (Click to filter)")
         sector_counts = filtered_df.groupby('event_type').size().reset_index(name='count')
         fig_sector = px.bar(sector_counts, x='event_type', y='count',
                             color='event_type',
                             color_discrete_map=SECTOR_COLORS,
                             labels={'event_type': 'Sector', 'count': 'Total'})
-        st.plotly_chart(fig_sector, use_container_width=True)
+        
+        # Enable on_select for sector filtering
+        selected_sector_data = st.plotly_chart(fig_sector, use_container_width=True, on_select="rerun")
+        
+        if selected_sector_data and "selection" in selected_sector_data:
+            points = selected_sector_data["selection"].get("points", [])
+            if points:
+                clicked_sector = points[0].get("x")
+                if clicked_sector and clicked_sector != st.session_state.chart_selected_sector:
+                    st.session_state.chart_selected_sector = clicked_sector
+                    st.rerun()
 
     # --- Full News Feed (Replacing Table for Text Wrapping) ---
     st.subheader("📰 Detailed Event Feed")
     
-    # Display headers for the custom feed
+    # Display headers
     h1, h2, h3, h4 = st.columns([1, 1, 1, 3])
     with h1: st.markdown("**Date/Time**")
     with h2: st.markdown("**Country**")
@@ -211,14 +236,13 @@ def main_dashboard():
         with r2:
             st.write(row['country'])
         with r3:
-            # Color badge simulation
             color = SECTOR_COLORS.get(row['event_type'], "#FFFFFF")
             st.markdown(f"<span style='color:{color}; font-weight:bold;'>{row['event_type']}</span>", unsafe_allow_html=True)
         with r4:
             st.write(row['text_summary'])
             st.caption(f"Sources: {row['Channels']}")
             if row['Source Link']:
-                st.link_button("View Original Telegram Message", row['Source Link'], icon="🔗")
+                st.link_button("View Telegram", row['Source Link'], icon="🔗")
         st.divider()
 
 if __name__ == "__main__":

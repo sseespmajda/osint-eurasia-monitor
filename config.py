@@ -1,4 +1,4 @@
-import streamlit as st
+﻿import streamlit as st
 import os
 from dotenv import load_dotenv
 
@@ -13,28 +13,29 @@ def get_secret(key, default=None):
             return st.secrets[key]
     except:
         pass
-    
+
     # Try Environment Variables second (for local development via .env)
     env_val = os.getenv(key)
     if env_val:
         return env_val.strip() # Ensure no trailing spaces
-        
+
     # Return default
     return default
 
-# 1. API Keys (Set these locally in .env or in Streamlit Secrets)
+# 1. API Keys
 GEMINI_API_KEY = get_secret("GEMINI_API_KEY")
 
 # 2. Telegram Credentials
-TELEGRAM_API_ID = int(get_secret("TELEGRAM_API_ID", 123456)) 
+TELEGRAM_API_ID = int(get_secret("TELEGRAM_API_ID", 123456))
 TELEGRAM_API_HASH = get_secret("TELEGRAM_API_HASH", "YOUR_REAL_HASH_HERE")
 TELEGRAM_PHONE = get_secret("TELEGRAM_PHONE", "+0000000000")
 
 # 3. Database
 DB_PATH = "events.db"
 
-# 4. Monitored Channels
+# 4. Monitored Channels (Expanded List)
 CHANNELS = [
+    # Original List
     "lentachold",
     "agentstvonews",
     "milinfolive",
@@ -46,5 +47,32 @@ CHANNELS = [
     "energyofukraine",
     "V_Zelenskiy_official",
     "dtek_ua",
-    "geran_gerbera"
+    "geran_gerbera",
+    
+    # New Channels Added 2026-03-14
+    "baidildinovoil",
+    "made_in_kg",
+    "anserenko",
+    "anthabar",
+    "pamirinside",
+    "asiaplus",
+    "orda_kz",
+    "kgbul",
+    "kozachkow",
+    "kloopnews",
+    "qumash_kz",
+    "nehabar",
+    "paperkartuli",
+    "meydantvrussian",
+    "minval_az",
+    "bagramyan26",
+    "nlevshitstelegram",
+    "armtoday",
+    "belarusian_silovik",
+    "most_dnestr",
+    "FotrosResistancee",
+    "wfwitness",
+    "Suriyak_maps",
+    "ImpNavigator",
+    "Middle_East_Spectator"
 ]
