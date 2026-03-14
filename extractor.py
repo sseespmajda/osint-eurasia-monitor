@@ -9,58 +9,60 @@ import difflib
 client = genai.Client(api_key=config.GEMINI_API_KEY)
 MODEL_ID = 'gemini-3-flash-preview'
 
-def extract_event(message_text, channel_name, recent_events=None):
+def extract_batch_events(messages_batch, recent_events=None):
     """
-    Extracts data and checks for semantic duplicates, promotional content, 
-    identifies multiple countries including flag emoji hints, and categorizes sectors.
+    Analyzes a batch of messages in a single Gemini call to save credits.
+    Returns a list of extraction results.
     """
-    if not message_text or len(message_text.strip()) < 10:
-        return {"relevant": False}
+    if not messages_batch:
+        return []
 
-    # Format recent events for context
     context_str = "None"
     if recent_events:
         context_str = "\n".join([f"- ID {e['id']}: {e['text_summary']}" for e in recent_events])
 
+    # Format the batch for the prompt
+    batch_input = "\n\n".join([f"MESSAGE #{i}:\nChannel: {m['channel']}\nContent: {m['text']}" for i, m in enumerate(messages_batch)])
+
     prompt = f"""
-    You are an intelligence analyst. Extract structured data from the message.
+    You are an intelligence analyst. Analyze this BATCH of {len(messages_batch)} messages.
     IMPORTANT: All fields in the resulting JSON MUST be in English.
 
-    CONTEXT:
-    Below are recent events already recorded in the last 3 hours:
+    CONTEXT (Recent incidents in the last 24 hours):
     {context_str}
 
-    NEW MESSAGE:
-    Source Channel: {channel_name}
-    Content: {message_text}
+    MESSAGES TO PROCESS:
+    {batch_input}
 
     TASK:
+    For EACH message in the batch:
     1. Determine relevance (politics/security/econ/infra/culture/sports). 
-    2. FILTER OUT PROMOTIONAL CONTENT: Mark "relevant": false for ads, VPNs, channel promos.
-    3. SEMANTIC DEDUPLICATION: Check if this is the SAME real-world incident as any in CONTEXT.
-    4. COUNTRY IDENTIFICATION: Identify ALL countries mentioned or relevant. 
-       - Pay attention to flag emojis.
-       - Return a LIST of country names in English.
-    5. CATEGORIZATION: Categorize into EXACTLY ONE of these sectors:
-       - Security (includes war, terrorism, public safety, military)
-       - Politics (includes domestic politics, international relations)
-       - Economy (includes sanctions, trade, finance, business)
-       - Infrastructure (includes energy, transport, communications, utilities)
-       - Sports and Culture (includes sports events, cultural festivals, arts, entertainment, religion)
-       - Other (anything else relevant)
+    2. FILTER OUT PROMOTIONAL CONTENT: Mark "relevant": false for ads, VPNs, promos.
+    3. SEMANTIC MERGING: Check if this is the EXACT SAME real-world incident as any in CONTEXT OR any other message in THIS BATCH.
+       - If it's a duplicate of a CONTEXT event, set "is_duplicate": true and "duplicate_of_id" to that ID.
+       - If it's a duplicate of another message in this batch, set "is_duplicate": true and "duplicate_of_msg_index" to that index.
+    4. COUNTRY IDENTIFICATION: Identify ALL relevant countries.
+    5. CATEGORIZATION: Security, Politics, Economy, Infrastructure, Sports and Culture, or Other.
+    6. IMPORTANCE: Determine if this is a CRITICALLY IMPORTANT event (major explosion, death of official, huge military shift, nuclear event, etc).
 
-    Respond ONLY with valid JSON:
-    {{
-      "relevant": true/false,
-      "is_duplicate": true/false,
-      "duplicate_of_id": null or number,
-      "timestamp": "ISO date or null",
-      "text_title": "English title",
-      "text_summary": "Detailed English summary",
-      "event_type": "Security, Politics, Economy, Infrastructure, Sports and Culture, or Other",
-      "countries": ["List", "of", "Countries"],
-      "notes": "English notes"
-    }}
+    Respond ONLY with a JSON array containing objects for each message index:
+    [
+      {{
+        "index": 0,
+        "relevant": true/false,
+        "is_duplicate": true/false,
+        "duplicate_of_id": null or number,
+        "duplicate_of_msg_index": null or number,
+        "is_high_priority": true/false,
+        "timestamp": "ISO date",
+        "text_title": "English title",
+        "text_summary": "Detailed English summary",
+        "event_type": "Sector",
+        "countries": ["List"],
+        "notes": "Notes"
+      }},
+      ...
+    ]
     """
 
     try:
@@ -72,14 +74,8 @@ def extract_event(message_text, channel_name, recent_events=None):
         if text.startswith("```json"):
             text = text.replace("```json", "", 1).replace("```", "", 1).strip()
 
-        data = json.loads(text)
-        
-        # Manual fallback for VPN/Ads
-        summary_lower = data.get('text_summary', '').lower()
-        if any(word in summary_lower for word in ['vpn', 'subscribe to', 'bot launch', 'unlimited speed']):
-            data['relevant'] = False
-            
-        return data
+        results = json.loads(text)
+        return results
     except Exception as e:
-        print(f"Error in extract_event: {e}")
-        return {"relevant": False}
+        print(f"Error in extract_batch_events: {e}")
+        return [{"relevant": False}] * len(messages_batch)

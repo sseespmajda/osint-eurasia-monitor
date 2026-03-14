@@ -1,9 +1,10 @@
-﻿import asyncio
+import asyncio
 import datetime
 import json
 import subprocess
 import os
 import time
+import hashlib
 from telethon import TelegramClient, events, errors
 import config
 import database
@@ -12,169 +13,182 @@ import extractor
 # Initialize the Telethon client
 client = TelegramClient('session', config.TELEGRAM_API_ID, config.TELEGRAM_API_HASH)
 
+# Buffer for batch processing
+message_buffer = []
+BUFFER_LOCK = asyncio.Lock()
+BATCH_WINDOW = 300 # 5 minutes
+
+def get_msg_hash(text):
+    """Generates a stable hash for message text."""
+    return hashlib.sha256(text.strip().encode('utf-8')).hexdigest()
+
 def sync_to_cloud():
     """Automatically pushes the local database to GitHub."""
     try:
         print("\n[SYNC] Pushing updates to Cloud...")
-        # Get current branch name
         branch_res = subprocess.run(["git", "branch", "--show-current"], capture_output=True, text=True)
         branch = branch_res.stdout.strip() or "main"
-
-        # Check if remote exists
-        remote_check = subprocess.run(["git", "remote"], capture_output=True, text=True)
-        if "origin" not in remote_check.stdout:
-            print("[SYNC ERROR] Remote 'origin' not found.")
-            return
-
-        # Attempt to pull, but ignore errors if it's just a "no upstream" issue
         subprocess.run(["git", "pull", "--rebase", "origin", branch], capture_output=True)
-        
-        # Add and push the database
+        # Add and check specifically for database changes
         subprocess.run(["git", "add", "events.db"], check=True)
-        
-        # Check if there are changes to commit
-        status_res = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True)
+        status_res = subprocess.run(["git", "status", "--porcelain", "events.db"], capture_output=True, text=True)
         if not status_res.stdout.strip():
-            print("[SYNC] No changes to push.")
+            print("[SYNC] No database changes.")
             return
-
-        subprocess.run(["git", "commit", "-m", f"Auto-sync: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}"], check=True, capture_output=True)
+        
+        subprocess.run(["git", "commit", "-m", f"Auto-sync DB: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}"], check=True, capture_output=True)
         subprocess.run(["git", "push", "origin", branch], check=True, capture_output=True)
-        print(f"[SYNC] Cloud Dashboard updated successfully via branch '{branch}'.")
+        print(f"[SYNC] Cloud updated.")
     except Exception as e:
-        print(f"[SYNC ERROR] Could not sync to GitHub: {e}")
+        print(f"[SYNC ERROR] {e}")
 
-async def process_and_save(message, channel_name, all_events_context):
-    """Common logic for processing and saving a message."""
-    try:
-        message_text = message.message
-        message_id = message.id
+def is_urgent_locally(text):
+    """Simple keyword check for immediate urgency flagging."""
+    keywords = [
+        'срочно', 'молния', 'важно', 'взрыв', 'прилет', 'пво', 'ракета', 'бпла', 'тревога', 
+        'breaking', 'urgent', 'explosion', 'impact', 'missile', 'drone', 'attack'
+    ]
+    t = text.lower()
+    return any(k in t for k in keywords)
 
-        if not message_text or len(message_text.strip()) < 10:
-            return "irrelevant"
+async def process_batch():
+    """Processes all messages currently in the buffer."""
+    global message_buffer
+    async with BUFFER_LOCK:
+        if not message_buffer:
+            return
+        
+        current_batch = list(message_buffer)
+        message_buffer = []
 
-        # 1. Extract & Semantic Check
-        now = datetime.datetime.now(datetime.timezone.utc)
-        recent_context = [e for e in all_events_context if (now - datetime.datetime.fromisoformat(e['ingested_at']).replace(tzinfo=datetime.timezone.utc)).total_seconds() < (6 * 3600)]
-
-        extracted_data = extractor.extract_event(message_text, channel_name, recent_context)
-
-        if extracted_data.get('relevant'):
-            is_dup = extracted_data.get('is_duplicate', False)
-            duplicate_id = extracted_data.get('duplicate_of_id')
-
-            if not is_dup or duplicate_id is None:
-                # Handle multiple countries
-                countries = extracted_data.get('countries') or [extracted_data.get('country', 'International')]
-                if isinstance(countries, str):
-                    countries = [countries]
-                
-                # New Event
-                event_dict = {
-                    "timestamp": extracted_data.get('timestamp') or message.date.isoformat(),
-                    "ingested_at": message.date.isoformat(),
-                    "source_channel": channel_name,
-                    "message_id": message_id,
-                    "raw_message": message_text,
-                    "text_summary": extracted_data.get('text_summary', 'No summary provided'),
-                    "event_type": extracted_data.get('event_type', 'unknown'),
-                    "country": json.dumps(countries), # Store as JSON list
-                    "sources": json.dumps([channel_name])
-                }
-                database.insert_event(event_dict)
-                return "new"
-            else:
-                # Aggregate Sources
-                for old in all_events_context:
-                    if old['id'] == duplicate_id:
-                        try:
-                            sources = json.loads(old['sources']) if old.get('sources') else [old['source_channel']]  
-                        except:
-                            sources = [old['source_channel']]
-
-                        if channel_name not in sources:
-                            sources.append(channel_name)
-                            database.update_event_sources(duplicate_id, json.dumps(sources))
-                            return "source"
-                        return "dup"
-        return "irrelevant"
-    except Exception as e:
-        print(f"[ERROR] processing message from {channel_name}: {e}")
-        return "error"
-
-async def catch_up():
-    """Fetches missed messages since the last recorded event."""
+    print(f"\n[BATCH] Processing {len(current_batch)} messages...")
+    
     all_events = database.get_all_events()
-    if not all_events:
-        print("[CATCH-UP] No events in database, skipping catch-up.")
-        return False
+    now = datetime.datetime.now(datetime.timezone.utc)
+    recent_context = [e for e in all_events if (now - datetime.datetime.fromisoformat(e['ingested_at']).replace(tzinfo=datetime.timezone.utc)).total_seconds() < (24 * 3600)]
 
-    latest_event = max(all_events, key=lambda x: x['ingested_at'])
-    last_event_time = datetime.datetime.fromisoformat(latest_event['ingested_at'])
-    if last_event_time.tzinfo is None:
-        last_event_time = last_event_time.replace(tzinfo=datetime.timezone.utc)
+    # 1. First Pass: Check for EXACT hashes in DB (Instant save)
+    to_extract = []
+    for msg in current_batch:
+        h = get_msg_hash(msg['text'])
+        existing = database.get_event_by_hash(h)
+        if existing:
+            print(f" [HASH MATCH] Skipping Gemini for duplicate content from {msg['channel']}")
+            # Just update sources for the existing event
+            try:
+                sources = json.loads(existing['sources'])
+                if msg['channel'] not in sources:
+                    sources.append(msg['channel'])
+                    database.update_event_sources(existing['id'], json.dumps(sources))
+            except: pass
+        else:
+            to_extract.append(msg)
 
-    print(f"--- Catching up on missed messages since {last_event_time} ---")
+    if not to_extract:
+        print("[BATCH] All messages were exact duplicates. No API calls made.")
+        return
 
-    any_new = False
-    for channel in config.CHANNELS:
-        print(f"[CATCH-UP] Checking channel: {channel}...")
-        try:
-            count = 0
-            async for message in client.iter_messages(channel, limit=150):
-                msg_date = message.date
-                if msg_date.tzinfo is None:
-                    msg_date = msg_date.replace(tzinfo=datetime.timezone.utc)
+    # 2. Second Pass: Call Gemini for unique content
+    print(f"[BATCH] Calling Gemini for {len(to_extract)} unique messages...")
+    results = extractor.extract_batch_events(to_extract, recent_context)
+    
+    new_event_ids = {} # For batch-internal deduplication tracking
 
-                if msg_date <= last_event_time:
-                    break
-                
-                res = await process_and_save(message, channel, all_events)
-                if res in ["new", "source"]:
-                    any_new = True
-                    print("+" if res == "new" else "s", end="", flush=True)
-                
-                count += 1
-                if count >= 150:
-                    print(f"\n[CATCH-UP] Limit reached for {channel}, stopping.")
-                    break
-                await asyncio.sleep(0.1)
-        except errors.SecurityError as e:
-            print(f"\n[TELETHON SECURITY ERROR] {e}. Skipping {channel} for now.")
-            await asyncio.sleep(2)
-        except Exception as e:
-            print(f"\n[CATCH-UP ERROR] {channel}: {e}")
+    for i, res in enumerate(results):
+        if not res.get('relevant'): continue
+        
+        msg = to_extract[i]
+        msg_hash = get_msg_hash(msg['text'])
+        
+        is_dup = res.get('is_duplicate', False)
+        dup_id = res.get('duplicate_of_id')
+        dup_idx = res.get('duplicate_of_msg_index')
 
-    print("\n--- Catch-up complete. ---")
-    return any_new
+        # Combine AI priority and Local priority
+        is_high_priority = 1 if (res.get('is_high_priority') or is_urgent_locally(msg['text'])) else 0
+
+        # Handle batch-internal duplicates
+        if is_dup and dup_idx is not None and dup_idx in new_event_ids:
+            dup_id = new_event_ids[dup_idx]
+
+        if not is_dup or dup_id is None:
+            # New Event
+            countries = res.get('countries') or ["International"]
+            event_dict = {
+                "timestamp": res.get('timestamp') or msg['date'].isoformat(),
+                "ingested_at": msg['date'].isoformat(),
+                "source_channel": msg['channel'],
+                "message_id": msg['id'],
+                "raw_message": msg['text'],
+                "text_summary": res.get('text_summary', 'No summary'),
+                "event_type": res.get('event_type', 'Other'),
+                "country": json.dumps(countries),
+                "sources": json.dumps([msg['channel']]),
+                "parent_id": None,
+                "message_hash": msg_hash,
+                "is_high_priority": is_high_priority
+            }
+            database.insert_event(event_dict)
+            # Fetch back the ID for internal batch referencing
+            latest = database.get_all_events()[0]
+            new_event_ids[i] = latest['id']
+        else:
+            # Link as Child
+            parent_id = dup_id
+            countries = res.get('countries') or ["International"]
+            event_dict = {
+                "timestamp": res.get('timestamp') or msg['date'].isoformat(),
+                "ingested_at": msg['date'].isoformat(),
+                "source_channel": msg['channel'],
+                "message_id": msg['id'],
+                "raw_message": msg['text'],
+                "text_summary": "Batch Update",
+                "event_type": res.get('event_type', 'Other'),
+                "country": json.dumps(countries),
+                "sources": json.dumps([msg['channel']]),
+                "parent_id": parent_id,
+                "message_hash": msg_hash,
+                "is_high_priority": is_high_priority
+            }
+            database.insert_event(event_dict)
+
+    sync_to_cloud()
+
+async def batch_timer():
+    """Runs process_batch every X minutes."""
+    while True:
+        await asyncio.sleep(BATCH_WINDOW)
+        await process_batch()
 
 async def main():
     database.setup_database()
+    
+    # Start the timer task
+    asyncio.create_task(batch_timer())
 
     @client.on(events.NewMessage(chats=config.CHANNELS))
     async def handler(event):
-        try:
-            all_events = database.get_all_events()
-            chat = await event.get_chat()
-            channel_name = getattr(chat, 'username', None) or str(chat.id)
-            
-            res = await process_and_save(event.message, channel_name, all_events)       
-            if res in ["new", "source"]:
-                print(f"\n[EVENT] Updating Cloud...")
-                sync_to_cloud()
-        except Exception as e:
-            print(f"[HANDLER ERROR] {e}")
+        if not event.message.message or len(event.message.message.strip()) < 15:
+            return
+
+        chat = await event.get_chat()
+        channel_name = getattr(chat, 'username', None) or str(chat.id)
+        
+        async with BUFFER_LOCK:
+            message_buffer.append({
+                "id": event.message.id,
+                "text": event.message.message,
+                "channel": channel_name,
+                "date": event.message.date
+            })
+        print(".", end="", flush=True)
 
     await client.start(phone=config.TELEGRAM_PHONE)
-
-    if await catch_up():
-        sync_to_cloud()
-
-    print("Listening for new messages...")
+    print(f"Listening (Batch window: {BATCH_WINDOW}s)...")
     await client.run_until_disconnected()
 
 if __name__ == '__main__':
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\nMonitor stopped.")
+        print("\nStopped.")

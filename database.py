@@ -24,7 +24,10 @@ def setup_database():
             text_summary TEXT,
             event_type TEXT,
             sources TEXT,
-            country TEXT
+            country TEXT,
+            parent_id INTEGER DEFAULT NULL,
+            message_hash TEXT DEFAULT NULL,
+            is_high_priority INTEGER DEFAULT 0
         )
     ''')
     
@@ -39,6 +42,15 @@ def setup_database():
     if 'country' not in columns:
         print("Migrating: Adding 'country' column")
         cursor.execute("ALTER TABLE events ADD COLUMN country TEXT")
+    if 'parent_id' not in columns:
+        print("Migrating: Adding 'parent_id' column")
+        cursor.execute("ALTER TABLE events ADD COLUMN parent_id INTEGER")
+    if 'message_hash' not in columns:
+        print("Migrating: Adding 'message_hash' column")
+        cursor.execute("ALTER TABLE events ADD COLUMN message_hash TEXT")
+    if 'is_high_priority' not in columns:
+        print("Migrating: Adding 'is_high_priority' column")
+        cursor.execute("ALTER TABLE events ADD COLUMN is_high_priority INTEGER")
     
     conn.commit()
     conn.close()
@@ -48,11 +60,20 @@ def insert_event(event_dict):
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute('''
-        INSERT INTO events (timestamp, ingested_at, source_channel, message_id, raw_message, text_summary, event_type, sources, country)
-        VALUES (:timestamp, :ingested_at, :source_channel, :message_id, :raw_message, :text_summary, :event_type, :sources, :country)
-    ''', event_dict)
+        INSERT INTO events (timestamp, ingested_at, source_channel, message_id, raw_message, text_summary, event_type, sources, country, parent_id, message_hash, is_high_priority)
+        VALUES (:timestamp, :ingested_at, :source_channel, :message_id, :raw_message, :text_summary, :event_type, :sources, :country, :parent_id, :message_hash, :is_high_priority)
+    ''', {**{"parent_id": None, "message_hash": None, "is_high_priority": 0}, **event_dict})
     conn.commit()
     conn.close()
+
+def get_event_by_hash(msg_hash):
+    """Returns an event if the hash exists."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM events WHERE message_hash = ? LIMIT 1', (msg_hash,))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
 
 def update_event_sources(event_id, new_sources_json):
     """Updates the 'sources' column for an existing event."""
