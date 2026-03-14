@@ -1,7 +1,10 @@
-import asyncio
+﻿import asyncio
 import datetime
 import json
-from telethon import TelegramClient, events
+import subprocess
+import os
+import time
+from telethon import TelegramClient, events, errors
 import config
 import database
 import extractor
@@ -9,41 +12,62 @@ import extractor
 # Initialize the Telethon client
 client = TelegramClient('session', config.TELEGRAM_API_ID, config.TELEGRAM_API_HASH)
 
-async def handle_new_message(event):
-    """Callback for new messages with semantic deduplication."""
+def sync_to_cloud():
+    """Automatically pushes the local database to GitHub."""
     try:
-        channel = await event.get_chat()
-        channel_name = getattr(channel, 'username', 'unknown') or str(channel.id)
-        message_text = event.message.message
-        message_id = event.message.id
+        print("\n[SYNC] Pushing updates to Cloud...")
+        # Get current branch name
+        branch_res = subprocess.run(["git", "branch", "--show-current"], capture_output=True, text=True)
+        branch = branch_res.stdout.strip() or "main"
 
-        if not message_text:
+        # Check if remote exists
+        remote_check = subprocess.run(["git", "remote"], capture_output=True, text=True)
+        if "origin" not in remote_check.stdout:
+            print("[SYNC ERROR] Remote 'origin' not found.")
             return
 
-        # 1. Fetch recent events (last 3 hours) for context-aware extraction
-        all_events = database.get_all_events()
-        # Filter for last 3 hours locally to keep context small
-        now = datetime.datetime.now(datetime.timezone.utc)
-        recent_events = []
-        for e in all_events:
-            e_time = datetime.datetime.fromisoformat(e['ingested_at'])
-            if e_time.tzinfo is None:
-                e_time = e_time.replace(tzinfo=datetime.timezone.utc)
-            if (now - e_time).total_seconds() < (3 * 3600):
-                recent_events.append(e)
+        # Attempt to pull, but ignore errors if it's just a "no upstream" issue
+        subprocess.run(["git", "pull", "--rebase", "origin", branch], capture_output=True)
+        
+        # Add and push the database
+        subprocess.run(["git", "add", "events.db"], check=True)
+        
+        # Check if there are changes to commit
+        status_res = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True)
+        if not status_res.stdout.strip():
+            print("[SYNC] No changes to push.")
+            return
 
-        # 2. Extract event data via Gemini with semantic check
-        extracted_data = extractor.extract_event(message_text, channel_name, recent_events)
+        subprocess.run(["git", "commit", "-m", f"Auto-sync: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}"], check=True, capture_output=True)
+        subprocess.run(["git", "push", "origin", branch], check=True, capture_output=True)
+        print(f"[SYNC] Cloud Dashboard updated successfully via branch '{branch}'.")
+    except Exception as e:
+        print(f"[SYNC ERROR] Could not sync to GitHub: {e}")
+
+async def process_and_save(message, channel_name, all_events_context):
+    """Common logic for processing and saving a message."""
+    try:
+        message_text = message.message
+        message_id = message.id
+
+        if not message_text or len(message_text.strip()) < 10:
+            return "irrelevant"
+
+        # 1. Extract & Semantic Check
+        now = datetime.datetime.now(datetime.timezone.utc)
+        recent_context = [e for e in all_events_context if (now - datetime.datetime.fromisoformat(e['ingested_at']).replace(tzinfo=datetime.timezone.utc)).total_seconds() < (6 * 3600)]
+
+        extracted_data = extractor.extract_event(message_text, channel_name, recent_context)
 
         if extracted_data.get('relevant'):
             is_dup = extracted_data.get('is_duplicate', False)
             duplicate_id = extracted_data.get('duplicate_of_id')
-            
+
             if not is_dup or duplicate_id is None:
-                # 3. New Event
+                # New Event
                 event_dict = {
-                    "timestamp": extracted_data.get('timestamp') or datetime.datetime.now().isoformat(),
-                    "ingested_at": datetime.datetime.now().isoformat(),
+                    "timestamp": extracted_data.get('timestamp') or message.date.isoformat(),
+                    "ingested_at": message.date.isoformat(),
                     "source_channel": channel_name,
                     "message_id": message_id,
                     "raw_message": message_text,
@@ -53,40 +77,99 @@ async def handle_new_message(event):
                     "sources": json.dumps([channel_name])
                 }
                 database.insert_event(event_dict)
-                print(f"\n[NEW EVENT] [{channel_name}] {extracted_data.get('text_title', 'Untitled')}")
+                return "new"
             else:
-                # 4. Aggregate sources if duplicate
-                # Update existing record
-                for old in all_events:
+                # Aggregate Sources
+                for old in all_events_context:
                     if old['id'] == duplicate_id:
                         try:
-                            sources = json.loads(old['sources']) if old.get('sources') else [old['source_channel']]
+                            sources = json.loads(old['sources']) if old.get('sources') else [old['source_channel']]  
                         except:
                             sources = [old['source_channel']]
-                        
+
                         if channel_name not in sources:
                             sources.append(channel_name)
                             database.update_event_sources(duplicate_id, json.dumps(sources))
-                            print(f"s", end="", flush=True) # additional source
-                        else:
-                            print("d", end="", flush=True) # exact duplicate
-                        break
-        else:
-            print(".", end="", flush=True) # irrelevant
-
+                            return "source"
+                        return "dup"
+        return "irrelevant"
     except Exception as e:
-        print(f"\n[ERROR] in handle_new_message: {e}")
+        print(f"[ERROR] processing message from {channel_name}: {e}")
+        return "error"
+
+async def catch_up():
+    """Fetches missed messages since the last recorded event."""
+    all_events = database.get_all_events()
+    if not all_events:
+        print("[CATCH-UP] No events in database, skipping catch-up.")
+        return False
+
+    latest_event = max(all_events, key=lambda x: x['ingested_at'])
+    last_event_time = datetime.datetime.fromisoformat(latest_event['ingested_at'])
+    if last_event_time.tzinfo is None:
+        last_event_time = last_event_time.replace(tzinfo=datetime.timezone.utc)
+
+    print(f"--- Catching up on missed messages since {last_event_time} ---")
+
+    any_new = False
+    for channel in config.CHANNELS:
+        print(f"[CATCH-UP] Checking channel: {channel}...")
+        try:
+            count = 0
+            # Reduced limit to avoid hitting Telethon Security errors for large batches
+            async for message in client.iter_messages(channel, limit=150):
+                msg_date = message.date
+                if msg_date.tzinfo is None:
+                    msg_date = msg_date.replace(tzinfo=datetime.timezone.utc)
+
+                if msg_date <= last_event_time:
+                    break
+                
+                res = await process_and_save(message, channel, all_events)
+                if res in ["new", "source"]:
+                    any_new = True
+                    print("+" if res == "new" else "s", end="", flush=True)
+                
+                count += 1
+                if count >= 150:
+                    print(f"\n[CATCH-UP] Limit reached for {channel}, stopping.")
+                    break
+                
+                # Tiny sleep to avoid consecutive ignored message errors
+                await asyncio.sleep(0.1)
+
+        except errors.SecurityError as e:
+            print(f"\n[TELETHON SECURITY ERROR] {e}. Skipping {channel} for now.")
+            await asyncio.sleep(2) # Pause for longer
+        except Exception as e:
+            print(f"\n[CATCH-UP ERROR] {channel}: {e}")
+
+    print("\n--- Catch-up complete. ---")
+    return any_new
 
 async def main():
     database.setup_database()
-    print("--- OSINT Monitor Starting (SEMANTIC) ---")
-    
+
     @client.on(events.NewMessage(chats=config.CHANNELS))
     async def handler(event):
-        await handle_new_message(event)
+        try:
+            all_events = database.get_all_events()
+            chat = await event.get_chat()
+            channel_name = getattr(chat, 'username', None) or str(chat.id)
+            
+            res = await process_and_save(event.message, channel_name, all_events)       
+            if res in ["new", "source"]:
+                print(f"\n[EVENT] Updating Cloud...")
+                sync_to_cloud()
+        except Exception as e:
+            print(f"[HANDLER ERROR] {e}")
 
     await client.start(phone=config.TELEGRAM_PHONE)
-    print("Client is online.")
+
+    if await catch_up():
+        sync_to_cloud()
+
+    print("Listening for new messages...")
     await client.run_until_disconnected()
 
 if __name__ == '__main__':

@@ -1,5 +1,9 @@
 import streamlit as st
 import os
+from dotenv import load_dotenv
+
+# Load local environment variables from .env file (if it exists)
+load_dotenv()
 
 # --- Helper to handle both local and Streamlit Cloud ---
 def get_secret(key, default=None):
@@ -10,16 +14,16 @@ def get_secret(key, default=None):
     except:
         pass
     
-    # Try Environment Variables second
+    # Try Environment Variables second (for local development via .env)
     env_val = os.getenv(key)
     if env_val:
-        return env_val
+        return env_val.strip() # Ensure no trailing spaces
         
     # Return default
     return default
 
-# 1. API Keys (Set these locally or in Streamlit Secrets)
-GEMINI_API_KEY = get_secret("GEMINI_API_KEY", "YOUR_LOCAL_KEY_HERE")
+# 1. API Keys (Set these locally in .env or in Streamlit Secrets)
+GEMINI_API_KEY = get_secret("GEMINI_API_KEY")
 
 # 2. Telegram Credentials
 TELEGRAM_API_ID = int(get_secret("TELEGRAM_API_ID", 123456)) 
