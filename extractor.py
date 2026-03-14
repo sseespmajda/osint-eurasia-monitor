@@ -12,7 +12,7 @@ MODEL_ID = 'gemini-3-flash-preview'
 def extract_event(message_text, channel_name, recent_events=None):
     """
     Extracts data and checks for semantic duplicates, promotional content, 
-     and identifies multiple countries including flag emoji hints.
+    identifies multiple countries including flag emoji hints, and categorizes sectors.
     """
     if not message_text or len(message_text.strip()) < 10:
         return {"relevant": False}
@@ -35,13 +35,19 @@ def extract_event(message_text, channel_name, recent_events=None):
     Content: {message_text}
 
     TASK:
-    1. Determine relevance (politics/security/econ/infra). 
+    1. Determine relevance (politics/security/econ/infra/culture/sports). 
     2. FILTER OUT PROMOTIONAL CONTENT: Mark "relevant": false for ads, VPNs, channel promos.
     3. SEMANTIC DEDUPLICATION: Check if this is the SAME real-world incident as any in CONTEXT.
     4. COUNTRY IDENTIFICATION: Identify ALL countries mentioned or relevant. 
-       - CRITICAL: Pay attention to flag emojis (e.g., 🇷🇺, 🇺🇦, 🇰🇿, 🇮🇷) as they indicate the country context.
+       - Pay attention to flag emojis.
        - Return a LIST of country names in English.
-    5. CATEGORIZATION: Security, Politics, Economy, Infrastructure, or Other.
+    5. CATEGORIZATION: Categorize into EXACTLY ONE of these sectors:
+       - Security (includes war, terrorism, public safety, military)
+       - Politics (includes domestic politics, international relations)
+       - Economy (includes sanctions, trade, finance, business)
+       - Infrastructure (includes energy, transport, communications, utilities)
+       - Sports and Culture (includes sports events, cultural festivals, arts, entertainment, religion)
+       - Other (anything else relevant)
 
     Respond ONLY with valid JSON:
     {{
@@ -51,7 +57,7 @@ def extract_event(message_text, channel_name, recent_events=None):
       "timestamp": "ISO date or null",
       "text_title": "English title",
       "text_summary": "Detailed English summary",
-      "event_type": "Security, Politics, Economy, Infrastructure, or Other",
+      "event_type": "Security, Politics, Economy, Infrastructure, Sports and Culture, or Other",
       "countries": ["List", "of", "Countries"],
       "notes": "English notes"
     }}

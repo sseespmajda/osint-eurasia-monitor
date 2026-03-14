@@ -18,6 +18,7 @@ SECTOR_COLORS = {
     "Politics": "#17BECF",
     "Economy": "#FF6692",
     "Infrastructure": "#FFD700",
+    "Sports and Culture": "#00CC96", # Teal-Greenish
     "Other": "#9467BD"
 }
 
@@ -28,6 +29,7 @@ def categorize_sector(val):
     if any(k in val for k in ["politics", "political", "relation", "diplomat", "election", "government"]): return "Politics"
     if any(k in val for k in ["economy", "economic", "sanction", "trade", "finance", "oil", "gas", "business"]): return "Economy"
     if any(k in val for k in ["infra", "energy", "transport", "communication", "rail", "electric", "power", "utility"]): return "Infrastructure"
+    if any(k in val for k in ["sport", "football", "olympic", "culture", "museum", "festival", "concert", "movie", "film", "religion", "church"]): return "Sports and Culture"
     return "Other"
 
 @st.cache_data(ttl=300)
@@ -48,8 +50,7 @@ def load_data():
             parsed = json.loads(val)
             if isinstance(parsed, list): return parsed
             return [str(parsed)]
-        except:
-            return [val]
+        except: return [val]
 
     df['countries_list'] = df['country'].apply(parse_countries)
     df['country_display'] = df['countries_list'].apply(lambda x: ", ".join(x))
@@ -94,7 +95,6 @@ if st.sidebar.button("🔄 Manual Refresh"):
     st.rerun()
 
 if df is not None and not df.empty:
-    # Explode countries for filter list
     all_countries = sorted(list(set([c for sublist in df['countries_list'] for c in sublist])))
     all_sectors = sorted(df['event_type'].unique())
     min_date = df['final_date_only'].min()
@@ -132,7 +132,7 @@ def main_dashboard():
         st.info("📡 No events yet — start the listener to begin monitoring.")
         return
 
-    # Filter mask for multiple countries (if any selected country is in the event's list)
+    # Filter mask for multiple countries
     mask = df['countries_list'].apply(lambda x: any(c in x for c in selected_countries))
     mask &= df['event_type'].isin(selected_sectors)
     
@@ -161,18 +161,10 @@ def main_dashboard():
     st.divider()
 
     st.subheader("🌍 Geographic Distribution (Click to filter)")
-    # For the map, we need to count events per country (exploding the list)
     map_df = df.explode('countries_list').groupby('countries_list').size().reset_index(name='Events')
     
-    fig_map = px.choropleth(map_df, 
-                            locations="countries_list", 
-                            locationmode="country names",
-                            color="Events",
-                            hover_name="countries_list",
-                            color_continuous_scale=px.colors.sequential.Reds,
-                            template="plotly_dark")
+    fig_map = px.choropleth(map_df, locations="countries_list", locationmode="country names", color="Events", hover_name="countries_list", color_continuous_scale=px.colors.sequential.Reds, template="plotly_dark")
     fig_map.update_layout(margin={"r":0,"t":0,"l":0,"b":0}, height=400, clickmode='event+select')
-    
     selected_map_data = st.plotly_chart(fig_map, use_container_width=True, on_select="rerun")
     
     if selected_map_data and "selection" in selected_map_data:
