@@ -11,7 +11,7 @@ MODEL_ID = 'gemini-3-flash-preview'
 
 def extract_event(message_text, channel_name, recent_events=None):
     """
-    Extracts data and checks for semantic duplicates in one LLM call.
+    Extracts data and checks for semantic duplicates and promotional content.
     """
     if not message_text or len(message_text.strip()) < 10:
         return {"relevant": False}
@@ -35,15 +35,11 @@ def extract_event(message_text, channel_name, recent_events=None):
 
     TASK:
     1. Determine if the 'NEW MESSAGE' is relevant to political/security/economic/infrastructure events.
-    2. Check if it describes the SAME real-world incident as any event in the CONTEXT.
-       - If it's the same event (even with slightly different details), mark as duplicate.
-    3. Identify the primary country the news refers to. Use full English names (e.g., 'Russia', 'Ukraine', 'Israel', 'USA').
-    4. Categorize the event into EXACTLY ONE of these sectors:
-       - Security (includes war, terrorism, public safety, military)
-       - Politics (includes domestic politics, international relations)
-       - Economy (includes sanctions, trade, finance)
-       - Infrastructure (includes energy, transport, communications)
-       - Other (anything else relevant)
+    2. FILTER OUT PROMOTIONAL CONTENT: Mark "relevant": false if the message is an advertisement, a promotion for a VPN service, a call to join another Telegram channel, or a marketing post.
+    3. Check if it describes the SAME real-world incident as any event in the CONTEXT.
+       - If it's the same event, mark as duplicate.
+    4. Identify the primary country. Use full English names.
+    5. Categorize into: Security, Politics, Economy, Infrastructure, or Other.
 
     Respond ONLY with valid JSON:
     {{
@@ -69,6 +65,12 @@ def extract_event(message_text, channel_name, recent_events=None):
             text = text.replace("```json", "", 1).replace("```", "", 1).strip()
 
         data = json.loads(text)
+        
+        # Additional safety check for VPN/Ads in the summary just in case
+        summary_lower = data.get('text_summary', '').lower()
+        if any(word in summary_lower for word in ['vpn', 'subscribe to', 'bot launch', 'unlimited speed']):
+            data['relevant'] = False
+            
         return data
     except Exception as e:
         print(f"Error in extract_event: {e}")

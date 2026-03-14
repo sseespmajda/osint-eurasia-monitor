@@ -43,7 +43,7 @@ def load_data():
         return None
     df = pd.DataFrame(events)
 
-    for col in ['message_id', 'sources', 'country', 'event_type']:
+    for col in ['message_id', 'sources', 'country', 'event_type', 'raw_message']:
         if col not in df.columns:
             df[col] = None
 
@@ -90,6 +90,9 @@ df = load_data()
 st.sidebar.header("Filters & Controls")
 st.sidebar.info(f"✅ Database Last Updated:\n{last_update}")
 
+# NEW: SEARCH BAR
+search_query = st.sidebar.text_input("🔍 Search Summaries", placeholder="e.g. drone, strike, gas...")
+
 if st.sidebar.button("🔄 Manual Refresh"):
     st.cache_data.clear()
     st.rerun()
@@ -107,8 +110,8 @@ if df is not None and not df.empty:
         st.session_state.chart_selected_sector = None
 
     # Clear All Map & Chart Filters Button
-    if st.session_state.map_selected_country or st.session_state.chart_selected_sector:
-        if st.sidebar.button("Clear Interactive Filters"):
+    if st.session_state.map_selected_country or st.session_state.chart_selected_sector or search_query:
+        if st.sidebar.button("Clear Search & Interactive Filters"):
             st.session_state.map_selected_country = None
             st.session_state.chart_selected_sector = None
             st.rerun()
@@ -140,6 +143,12 @@ def main_dashboard():
 
     # Filter the Dataframe
     mask = (df['country'].isin(selected_countries)) & (df['event_type'].isin(selected_sectors))
+    
+    # APPLY SEARCH FILTER IF QUERY EXISTS
+    if search_query:
+        mask &= (df['text_summary'].str.contains(search_query, case=False, na=False)) | \
+                (df['raw_message'].str.contains(search_query, case=False, na=False))
+
     if len(date_range) == 2:
         mask &= (df['final_date_only'] >= date_range[0]) & (df['final_date_only'] <= date_range[1])
 
@@ -185,7 +194,7 @@ def main_dashboard():
                 st.rerun()
 
     if filtered_df.empty:
-        st.warning("No events found matching the current filters.")
+        st.warning("No events found matching the current filters/search.")
         return
 
     # --- Charts ---
@@ -193,7 +202,6 @@ def main_dashboard():
     with c1:
         st.subheader("📊 Events Over Time")
         daily_counts = filtered_df.groupby('final_date_only').size().reset_index(name='count')
-        # Change to BAR chart as requested
         fig_time = px.bar(daily_counts, x='final_date_only', y='count',
                           labels={'final_date_only': 'Date', 'count': 'Events'},
                           color_discrete_sequence=['#EF553B'])
@@ -207,7 +215,6 @@ def main_dashboard():
                             color_discrete_map=SECTOR_COLORS,
                             labels={'event_type': 'Sector', 'count': 'Total'})
         
-        # Enable on_select for sector filtering
         selected_sector_data = st.plotly_chart(fig_sector, use_container_width=True, on_select="rerun")
         
         if selected_sector_data and "selection" in selected_sector_data:
