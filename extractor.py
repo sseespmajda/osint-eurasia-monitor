@@ -11,7 +11,8 @@ MODEL_ID = 'gemini-3-flash-preview'
 
 def extract_event(message_text, channel_name, recent_events=None):
     """
-    Extracts data and checks for semantic duplicates and promotional content.
+    Extracts data and checks for semantic duplicates, promotional content, 
+     and identifies multiple countries including flag emoji hints.
     """
     if not message_text or len(message_text.strip()) < 10:
         return {"relevant": False}
@@ -34,12 +35,13 @@ def extract_event(message_text, channel_name, recent_events=None):
     Content: {message_text}
 
     TASK:
-    1. Determine if the 'NEW MESSAGE' is relevant to political/security/economic/infrastructure events.
-    2. FILTER OUT PROMOTIONAL CONTENT: Mark "relevant": false if the message is an advertisement, a promotion for a VPN service, a call to join another Telegram channel, or a marketing post.
-    3. Check if it describes the SAME real-world incident as any event in the CONTEXT.
-       - If it's the same event, mark as duplicate.
-    4. Identify the primary country. Use full English names.
-    5. Categorize into: Security, Politics, Economy, Infrastructure, or Other.
+    1. Determine relevance (politics/security/econ/infra). 
+    2. FILTER OUT PROMOTIONAL CONTENT: Mark "relevant": false for ads, VPNs, channel promos.
+    3. SEMANTIC DEDUPLICATION: Check if this is the SAME real-world incident as any in CONTEXT.
+    4. COUNTRY IDENTIFICATION: Identify ALL countries mentioned or relevant. 
+       - CRITICAL: Pay attention to flag emojis (e.g., 🇷🇺, 🇺🇦, 🇰🇿, 🇮🇷) as they indicate the country context.
+       - Return a LIST of country names in English.
+    5. CATEGORIZATION: Security, Politics, Economy, Infrastructure, or Other.
 
     Respond ONLY with valid JSON:
     {{
@@ -50,7 +52,7 @@ def extract_event(message_text, channel_name, recent_events=None):
       "text_title": "English title",
       "text_summary": "Detailed English summary",
       "event_type": "Security, Politics, Economy, Infrastructure, or Other",
-      "country": "Primary country name in English",
+      "countries": ["List", "of", "Countries"],
       "notes": "English notes"
     }}
     """
@@ -66,7 +68,7 @@ def extract_event(message_text, channel_name, recent_events=None):
 
         data = json.loads(text)
         
-        # Additional safety check for VPN/Ads in the summary just in case
+        # Manual fallback for VPN/Ads
         summary_lower = data.get('text_summary', '').lower()
         if any(word in summary_lower for word in ['vpn', 'subscribe to', 'bot launch', 'unlimited speed']):
             data['relevant'] = False

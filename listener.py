@@ -64,6 +64,11 @@ async def process_and_save(message, channel_name, all_events_context):
             duplicate_id = extracted_data.get('duplicate_of_id')
 
             if not is_dup or duplicate_id is None:
+                # Handle multiple countries
+                countries = extracted_data.get('countries') or [extracted_data.get('country', 'International')]
+                if isinstance(countries, str):
+                    countries = [countries]
+                
                 # New Event
                 event_dict = {
                     "timestamp": extracted_data.get('timestamp') or message.date.isoformat(),
@@ -73,7 +78,7 @@ async def process_and_save(message, channel_name, all_events_context):
                     "raw_message": message_text,
                     "text_summary": extracted_data.get('text_summary', 'No summary provided'),
                     "event_type": extracted_data.get('event_type', 'unknown'),
-                    "country": extracted_data.get('country', 'International'),
+                    "country": json.dumps(countries), # Store as JSON list
                     "sources": json.dumps([channel_name])
                 }
                 database.insert_event(event_dict)
@@ -116,7 +121,6 @@ async def catch_up():
         print(f"[CATCH-UP] Checking channel: {channel}...")
         try:
             count = 0
-            # Reduced limit to avoid hitting Telethon Security errors for large batches
             async for message in client.iter_messages(channel, limit=150):
                 msg_date = message.date
                 if msg_date.tzinfo is None:
@@ -134,13 +138,10 @@ async def catch_up():
                 if count >= 150:
                     print(f"\n[CATCH-UP] Limit reached for {channel}, stopping.")
                     break
-                
-                # Tiny sleep to avoid consecutive ignored message errors
                 await asyncio.sleep(0.1)
-
         except errors.SecurityError as e:
             print(f"\n[TELETHON SECURITY ERROR] {e}. Skipping {channel} for now.")
-            await asyncio.sleep(2) # Pause for longer
+            await asyncio.sleep(2)
         except Exception as e:
             print(f"\n[CATCH-UP ERROR] {channel}: {e}")
 
