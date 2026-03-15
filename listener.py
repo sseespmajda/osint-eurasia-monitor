@@ -105,12 +105,8 @@ async def process_batch():
         dup_id = res.get('duplicate_of_id')
         dup_idx = res.get('duplicate_of_msg_index')
 
-        # Combine AI priority and Local priority
-        is_high_priority = 1 if (res.get('is_high_priority') or is_urgent_locally(msg['text'])) else 0
-
-        # Handle batch-internal duplicates
-        if is_dup and dup_idx is not None and dup_idx in new_event_ids:
-            dup_id = new_event_ids[dup_idx]
+        # Use AI-determined priority only (local keywords were too sensitive)
+        is_high_priority = 1 if res.get('is_high_priority') else 0
 
         if not is_dup or dup_id is None:
             # New Event
@@ -143,7 +139,7 @@ async def process_batch():
                 "source_channel": msg['channel'],
                 "message_id": msg['id'],
                 "raw_message": msg['text'],
-                "text_summary": "Batch Update",
+                "text_summary": res.get('text_summary', 'Update'),
                 "event_type": res.get('event_type', 'Other'),
                 "country": json.dumps(countries),
                 "sources": json.dumps([msg['channel']]),
