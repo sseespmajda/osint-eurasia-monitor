@@ -1,4 +1,5 @@
 import sqlite3
+import datetime
 import config
 
 def get_connection():
@@ -52,8 +53,51 @@ def setup_database():
         print("Migrating: Adding 'is_high_priority' column")
         cursor.execute("ALTER TABLE events ADD COLUMN is_high_priority INTEGER")
     
+    # 3. Create usage table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS usage_logs (
+            date TEXT PRIMARY KEY,
+            count INTEGER DEFAULT 0
+        )
+    ''')
+    
     conn.commit()
     conn.close()
+
+def check_and_increment_api_usage(limit=500):
+    """Checks the daily API usage and increments it if under the limit. Returns True if OK."""
+    today = datetime.date.today().isoformat()
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT count FROM usage_logs WHERE date = ?', (today,))
+    row = cursor.fetchone()
+    
+    if row:
+        current_count = row['count']
+        if current_count >= limit:
+            conn.close()
+            return False, current_count
+        
+        cursor.execute('UPDATE usage_logs SET count = count + 1 WHERE date = ?', (today,))
+        new_count = current_count + 1
+    else:
+        cursor.execute('INSERT INTO usage_logs (date, count) VALUES (?, 1)', (today,))
+        new_count = 1
+        
+    conn.commit()
+    conn.close()
+    return True, new_count
+
+def get_today_api_usage():
+    """Returns the current API count for today."""
+    today = datetime.date.today().isoformat()
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT count FROM usage_logs WHERE date = ?', (today,))
+    row = cursor.fetchone()
+    conn.close()
+    return row['count'] if row else 0
 
 def insert_event(event_dict):
     """Inserts a new event into the database."""
@@ -82,6 +126,26 @@ def update_event_sources(event_id, new_sources_json):
     cursor.execute('''
         UPDATE events SET sources = ? WHERE id = ?
     ''', (new_sources_json, event_id))
+    conn.commit()
+    conn.close()
+
+def get_last_message_ids():
+    """Returns a dictionary mapping channel names to their latest message_id in the DB."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT source_channel, MAX(message_id) as last_id FROM events GROUP BY source_channel')
+    rows = cursor.fetchall()
+    conn.close()
+    return {row['source_channel']: row['last_id'] for row in rows}
+
+def delete_event(event_id):
+    """Deletes an event and its associated children/updates."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    # Delete the event itself
+    cursor.execute('DELETE FROM events WHERE id = ?', (event_id,))
+    # Delete any children pointing to this event
+    cursor.execute('DELETE FROM events WHERE parent_id = ?', (event_id,))
     conn.commit()
     conn.close()
 

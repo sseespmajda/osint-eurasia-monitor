@@ -61,7 +61,8 @@ async def process_batch():
         current_batch = list(message_buffer)
         message_buffer = []
 
-    print(f"\n[BATCH] Processing {len(current_batch)} messages...")
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"\n[{now_str}] [BATCH] Processing {len(current_batch)} messages...")
     
     all_events = database.get_all_events()
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -73,7 +74,7 @@ async def process_batch():
         h = get_msg_hash(msg['text'])
         existing = database.get_event_by_hash(h)
         if existing:
-            print(f" [HASH MATCH] Skipping Gemini for duplicate content from {msg['channel']}")
+            print(f" [{now_str}] [HASH MATCH] Skipping Gemini for duplicate content from {msg['channel']}")
             # Just update sources for the existing event
             try:
                 sources = json.loads(existing['sources'])
@@ -85,11 +86,11 @@ async def process_batch():
             to_extract.append(msg)
 
     if not to_extract:
-        print("[BATCH] All messages were exact duplicates. No API calls made.")
+        print(f"[{now_str}] [BATCH] All messages were exact duplicates. No API calls made.")
         return
 
     # 2. Second Pass: Call Gemini for unique content
-    print(f"[BATCH] Calling Gemini for {len(to_extract)} unique messages...")
+    print(f"[{now_str}] [BATCH] Calling Gemini for {len(to_extract)} unique messages...")
     results = extractor.extract_batch_events(to_extract, recent_context)
     
     new_event_ids = {} # For batch-internal deduplication tracking
@@ -155,13 +156,62 @@ async def process_batch():
     sync_to_cloud()
 
 async def batch_timer():
-    """Runs process_batch every X minutes."""
+    """Runs process_batch every X minutes, adjusting cadence based on API usage."""
     while True:
-        await asyncio.sleep(BATCH_WINDOW)
+        # Check current usage to adjust cadence
+        usage = database.get_today_api_usage()
+        
+        current_window = BATCH_WINDOW
+        if usage >= 450:
+            current_window = 1800 # 30 minutes (Emergency mode)
+            print(f"\n[CADENCE] Usage high ({usage}/500). Slowing to 30m window.")
+        elif usage >= 400:
+            current_window = 900  # 15 minutes
+            print(f"\n[CADENCE] Usage moderate ({usage}/500). Slowing to 15m window.")
+            
+        await asyncio.sleep(current_window)
         await process_batch()
+
+async def sync_gaps():
+    """Fetches messages missed while the listener was offline."""
+    print("\n[GAP SYNC] Checking for missed messages...")
+    last_ids = database.get_last_message_ids()
+    
+    total_missed = 0
+    for channel in config.CHANNELS:
+        last_id = last_ids.get(channel)
+        if not last_id: continue
+        
+        try:
+            # Fetch messages since the last known ID
+            async for message in client.iter_messages(channel, min_id=last_id, limit=100):
+                if not message.message or len(message.message.strip()) < 15:
+                    continue
+                
+                async with BUFFER_LOCK:
+                    message_buffer.append({
+                        "id": message.id,
+                        "text": message.message,
+                        "channel": channel,
+                        "date": message.date
+                    })
+                total_missed += 1
+        except Exception as e:
+            print(f" [GAP ERROR] {channel}: {e}")
+    
+    if total_missed > 0:
+        print(f"[GAP SYNC] Queued {total_missed} missed messages for processing.")
+        await process_batch()
+    else:
+        print("[GAP SYNC] No missed messages found.")
 
 async def main():
     database.setup_database()
+    
+    await client.start(phone=config.TELEGRAM_PHONE)
+    
+    # Run gap sync once before starting live monitoring
+    await sync_gaps()
     
     # Start the timer task
     asyncio.create_task(batch_timer())

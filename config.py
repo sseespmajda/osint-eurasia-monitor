@@ -61,18 +61,15 @@ CHANNELS = [
     "kozachkow",
     "kloopnews",
     "qumash_kz",
-    "nehabar",
     "paperkartuli",
     "meydantvrussian",
     "minval_az",
     "bagramyan26",
     "nlevshitstelegram",
     "armtoday",
-    "belarusian_silovik",
     "most_dnestr",
     "FotrosResistancee",
     "wfwitness",
     "Suriyak_maps",
-    "ImpNavigator",
     "Middle_East_Spectator"
 ]
