@@ -11,16 +11,19 @@ client = genai.Client(api_key=config.GEMINI_API_KEY)
 MODEL_ID = 'gemini-3-flash-preview'
 
 def is_ad_or_promo(text):
-    """Lite local check to weed out obvious Telegram ads/promos without LLM."""
+    """Lite local check to weed out obvious Telegram ads/promos and sports noise without LLM."""
     if not text: return True
     t = text.lower()
-    ad_keywords = [
+    # Ad and Garbage keywords
+    trash_keywords = [
         '#реклама', 'подписывайтесь', 'vpn', 'crypto', 'trading', 'бонусы',
         'зарабатывать', 'курсы', 'скидка', 'промокод', 'реферальная',
         'подписка', 'бесплатно', 'инвестиции', 'сигналы', 'обучение',
-        'p2p', 'арбитраж', 'казино', 'casino', 'ставка', 'выплаты'
+        'p2p', 'арбитраж', 'казино', 'casino', 'ставка', 'выплаты',
+        'mma', 'ufc', 'fight night', 'чемпионат', 'победил', 'нокаут',
+        'матч', 'лига', 'league', 'футбол', 'football', 'basketball', 'теннис'
     ]
-    return any(k in t for k in ad_keywords)
+    return any(k in t for k in trash_keywords)
 
 def extract_event(text, channel, recent_events=None):
     """Wrapper to maintain compatibility with legacy single-event calls."""
